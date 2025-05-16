@@ -1,6 +1,10 @@
 import numpy as np
 
+from scipy.ndimage import generate_binary_structure
+
+from ._clear_border_cy import _clear_border_flat
 from ..measure import label
+from ..morphology._util import _offsets_to_raveled_neighbors
 
 
 def clear_border(labels, buffer_size=0, bgval=0, mask=None, *, out=None):
@@ -90,20 +94,69 @@ def clear_border(labels, buffer_size=0, bgval=0, mask=None, *, out=None):
             slices[d] = slend
             borders[tuple(slices)] = True
             slices[d] = slice(None)
+            
+    return _clear_border_fast(out, borders, bgval)
 
-    # Re-label, in case we are dealing with a binary out
-    # and to get consistent labeling
-    labels, number = label(out, background=0, return_num=True)
+def _clear_border_fast(out, from_mask, bgval):
+    
+    #################
+    # Most preparation logic is the same as of morphology.flood_fill
+    ################
+    
+    # Correct start point in ravelled image - only copy if non-contiguous
+    out = np.asarray(out)
+    if out.flags.f_contiguous is True:
+        order = 'F'
+    elif out.flags.c_contiguous is True:
+        order = 'C'
+    else:
+        out = np.ascontiguousarray(out)
+        order = 'C'
 
-    # determine all objects that are connected to borders
-    borders_indices = np.unique(labels[borders])
-    indices = np.arange(number + 1)
-    # mask all label indices that are connected to borders
-    label_mask = np.isin(indices, borders_indices)
-    # create mask for pixels to clear
-    mask = label_mask[labels.reshape(-1)].reshape(labels.shape)
+    # Shortcut for rank zero
+    if 0 in out.shape:
+        return np.zeros(out.shape, dtype=bool)
+    
+    footprint = generate_binary_structure(out.ndim, out.ndim)
+    
+    center = tuple(s // 2 for s in footprint.shape)
+    # Compute padding width as the maximum offset to neighbors on each axis.
+    # Generates a 2-tuple of (pad_start, pad_end) for each axis.
+    pad_width = [
+        (np.max(np.abs(idx - c)),) * 2 for idx, c in zip(np.nonzero(footprint), center)
+    ]
+    
+    working_out = np.pad(
+        out, pad_width, mode='constant', constant_values=False
+    )
+    
+    working_mask = np.pad(
+        from_mask, pad_width, mode='constant', constant_values=False
+    )
+    
+    # initial indices from the mask
+    initial_indices = np.where(working_mask.ravel(order=order))[0]
 
-    # clear border pixels
-    out[mask] = bgval
+    # allocate a bigger buffer
+    raveled_indices = np.empty(working_out.size, dtype=initial_indices.dtype)
 
-    return out
+    # copy initial indices in
+    raveled_indices[:len(initial_indices)] = initial_indices
+    
+    # Stride-aware neighbors - works for both C- and Fortran-contiguity
+    neighbor_offsets = _offsets_to_raveled_neighbors(
+        working_out.shape, footprint, center=center, order=order
+    )
+    
+    n_indices = len(initial_indices)
+        
+    _clear_border_flat(
+        working_out.ravel(order=order),
+        raveled_indices,
+        neighbor_offsets,
+        n_indices,
+    )
+    
+    return working_out
+    
+    
