@@ -4,6 +4,7 @@ from scipy.ndimage import generate_binary_structure
 
 from ._clear_border_cy import _clear_border_flat
 from ..measure import label
+from ..util import crop
 from ..morphology._util import _offsets_to_raveled_neighbors
 
 
@@ -97,21 +98,18 @@ def clear_border(labels, buffer_size=0, bgval=0, mask=None, *, out=None):
             
     return _clear_border_fast(out, borders, bgval)
 
-def _clear_border_fast(out, from_mask, bgval):
+def _clear_border_fast(out, initial_indices, bgval):
+    import time
+    st_in = time.time()
     
     #################
-    # Most preparation logic is the same as of morphology.flood_fill
+    # Most preparation logic is the similar as of morphology.flood_fill
     ################
     
-    # Correct start point in ravelled image - only copy if non-contiguous
+    # ensure C contiguity, as required by nonzero checking
     out = np.asarray(out)
-    if out.flags.f_contiguous is True:
-        order = 'F'
-    elif out.flags.c_contiguous is True:
-        order = 'C'
-    else:
+    if out.flags.c_contiguous is False:
         out = np.ascontiguousarray(out)
-        order = 'C'
 
     # Shortcut for rank zero
     if 0 in out.shape:
@@ -125,38 +123,46 @@ def _clear_border_fast(out, from_mask, bgval):
     pad_width = [
         (np.max(np.abs(idx - c)),) * 2 for idx, c in zip(np.nonzero(footprint), center)
     ]
-    
-    working_out = np.pad(
-        out, pad_width, mode='constant', constant_values=False
+        
+    out = np.pad(
+        out, pad_width, mode='constant', constant_values=bgval
     )
     
-    working_mask = np.pad(
-        from_mask, pad_width, mode='constant', constant_values=False
-    )
+    out_view = out.ravel(order='C')
     
+    initial_indices = np.pad(
+        initial_indices, pad_width, mode='constant', constant_values=False
+    )
+
     # initial indices from the mask
-    initial_indices = np.where(working_mask.ravel(order=order))[0]
-
-    # allocate a bigger buffer
-    raveled_indices = np.empty(working_out.size, dtype=initial_indices.dtype)
-
-    # copy initial indices in
-    raveled_indices[:len(initial_indices)] = initial_indices
+    initial_indices = np.nonzero(initial_indices.ravel(order='C'))[0]
     
-    # Stride-aware neighbors - works for both C- and Fortran-contiguity
-    neighbor_offsets = _offsets_to_raveled_neighbors(
-        working_out.shape, footprint, center=center, order=order
-    )
+    # remove initial indices straight away
+    out_view[initial_indices] = bgval
     
     n_indices = len(initial_indices)
+    
+    # used within the algorithm to store the indices left to explore
+    indices_container = np.empty(out_view.shape, dtype=initial_indices.dtype)
+    indices_container[:n_indices] = initial_indices
+
+    # Stride-aware neighbors 
+    neighbor_offsets = _offsets_to_raveled_neighbors(
+        out.shape, footprint, center=center, order='C'
+    )
         
+    st = time.time()
     _clear_border_flat(
-        working_out.ravel(order=order),
-        raveled_indices,
+        out_view,
+        indices_container,
         neighbor_offsets,
         n_indices,
+        bgval
     )
+    et = time.time()
+    print(f"Core time: {et-st}")
+    print(f"Total inner time: {et-st_in}")
     
-    return working_out
+    return crop(out, pad_width, copy=False)
     
     
