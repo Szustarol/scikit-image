@@ -21,8 +21,8 @@ ctypedef fused dtype_t:
     cnp.float64_t
 
 cpdef inline void _clear_border_flat(dtype_t[::1] out_view,
-                                    Py_ssize_t[::1] indices,
-                                    Py_ssize_t[::1] neighbor_offsets,
+                                    size_t[::1] indices,
+                                    ssize_t[::1] neighbor_offsets,
                                     cnp.uint8_t[::1] visited,
                                     Py_ssize_t n_indices,
                                     dtype_t bgval

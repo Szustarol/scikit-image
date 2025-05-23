@@ -130,20 +130,26 @@ def _clear_border_fast(out, initial_indices, bgval):
     # initial indices from the mask
     initial_indices = np.nonzero(initial_indices.ravel(order=order))[0]
     
-    visited = np.zeros((len(out_view)), dtype=np.uint8)
+    visited = np.zeros((len(out_view)), dtype=np.uint8, order=order)
     visited[initial_indices] = True
 
     n_indices = len(initial_indices)
     
     # used within the algorithm to store the indices left to explore
-    indices_container = np.empty(out_view.shape, dtype=initial_indices.dtype)
+    indices_container = np.empty(out_view.shape, dtype=np.uintp)
     indices_container[:n_indices] = initial_indices
 
     # Stride-aware neighbors 
     neighbor_offsets = _offsets_to_raveled_neighbors(
         out.shape, footprint, center=center, order=order
-    )
-        
+    ).astype(np.intp)
+    
+    neighbor_offsets = np.sort(neighbor_offsets, )
+    print(neighbor_offsets)
+    
+    import time
+    
+    s = time.time()
     _clear_border_flat(
         out_view,
         indices_container,
@@ -152,6 +158,7 @@ def _clear_border_fast(out, initial_indices, bgval):
         n_indices,
         bgval
     )
+    print("Core took", time.time() - s)
     
     visited = visited.reshape(out.shape, order=order)
     
