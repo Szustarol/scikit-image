@@ -99,47 +99,40 @@ def clear_border(labels, buffer_size=0, bgval=0, mask=None, *, out=None):
     return _clear_border_fast(out, borders, bgval)
 
 def _clear_border_fast(out, initial_indices, bgval):
-    import time
-    st_in = time.time()
-    
     #################
     # Most preparation logic is the similar as of morphology.flood_fill
     ################
     
-    # ensure C contiguity, as required by nonzero checking
-    out = np.asarray(out)
-    if out.flags.c_contiguous is False:
-        out = np.ascontiguousarray(out)
-
+    # ensure C contiguity, as required by nonzero checking    
+    if out.flags.c_contiguous is True:
+        out_view = out.ravel(order='C')
+        order = 'C'
+    elif initial_indices.flags.f_contiguous is True:
+        out_view = out.ravel(order='F')
+        order = 'F'
+    else:
+        # worst case scenario, out_view will be a copy
+        out_view = out.ravel(order='C')
+        order = 'C'
+        
     # Shortcut for rank zero
     if 0 in out.shape:
-        return np.zeros(out.shape, dtype=bool)
+        out[...] = bgval
+        return out
     
     footprint = generate_binary_structure(out.ndim, out.ndim)
     
     center = tuple(s // 2 for s in footprint.shape)
-    # Compute padding width as the maximum offset to neighbors on each axis.
-    # Generates a 2-tuple of (pad_start, pad_end) for each axis.
-    pad_width = [
-        (np.max(np.abs(idx - c)),) * 2 for idx, c in zip(np.nonzero(footprint), center)
-    ]
-        
-    out = np.pad(
-        out, pad_width, mode='constant', constant_values=bgval
-    )
     
-    out_view = out.ravel(order='C')
+    # if the initial indices are already background, skip them
+    initial_indices[out == bgval] = False
     
-    initial_indices = np.pad(
-        initial_indices, pad_width, mode='constant', constant_values=False
-    )
-
     # initial indices from the mask
-    initial_indices = np.nonzero(initial_indices.ravel(order='C'))[0]
+    initial_indices = np.nonzero(initial_indices.ravel(order=order))[0]
     
-    # remove initial indices straight away
-    out_view[initial_indices] = bgval
-    
+    visited = np.zeros((len(out_view)), dtype=np.uint8)
+    visited[initial_indices] = True
+
     n_indices = len(initial_indices)
     
     # used within the algorithm to store the indices left to explore
@@ -148,21 +141,22 @@ def _clear_border_fast(out, initial_indices, bgval):
 
     # Stride-aware neighbors 
     neighbor_offsets = _offsets_to_raveled_neighbors(
-        out.shape, footprint, center=center, order='C'
+        out.shape, footprint, center=center, order=order
     )
         
-    st = time.time()
     _clear_border_flat(
         out_view,
         indices_container,
         neighbor_offsets,
+        visited,
         n_indices,
         bgval
     )
-    et = time.time()
-    print(f"Core time: {et-st}")
-    print(f"Total inner time: {et-st_in}")
     
-    return crop(out, pad_width, copy=False)
+    visited = visited.reshape(out.shape, order=order)
+    
+    out[visited == 1] = bgval
+    
+    return out
     
     
